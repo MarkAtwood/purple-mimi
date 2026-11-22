@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "purple-mimi-core"
+description = "The engine of purple-mimi: mimid's agent inside a libpurple plugin"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+mimid-agent-core.workspace = true
+mimid-agent-store.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+getrandom.workspace = true
+
+[features]
+# Tests only: a panic on purpose inside an account's task
+# (Process::test_panic_next_open). Never enabled by a build that ships.
+test-hooks = []
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json.workspace = true

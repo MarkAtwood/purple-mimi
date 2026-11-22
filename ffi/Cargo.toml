@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "purple-mimi-ffi"
+description = "The C ABI of purple-mimi, linked into its libpurple plugins"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+# staticlib for the plugins; rlib so the Rust tests call the C functions.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+purple-mimi-core = { path = "../core" }
+
+[features]
+# Tests only: mimi_test_panic, and the core's panic on purpose.
+test-hooks = ["purple-mimi-core/test-hooks"]
+
+[dev-dependencies]
+purple-mimi-core = { path = "../core", features = ["test-hooks"] }
+tempfile.workspace = true
+serde_json.workspace = true
