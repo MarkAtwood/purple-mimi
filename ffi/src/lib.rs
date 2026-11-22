@@ -137,6 +137,12 @@ pub const MIMI_EV_CONNECTED: mimi_event_kind = 2;
 /// The account is closed by a failure or a takeover: `status`,
 /// `temporary`, `text`. Never sent after `mimi_account_close`.
 pub const MIMI_EV_DISCONNECTED: mimi_event_kind = 3;
+/// The glue fell behind and is to redraw every conversation from the
+/// records, which hold the truth (§5.5). No fields; `account` is NULL.
+/// It arrives when the glue let the queue reach
+/// `purple_mimi_core::events::MAX_QUEUED`, typically because its main
+/// thread stopped draining.
+pub const MIMI_EV_RESYNC: mimi_event_kind = 10;
 /// A log line: `level`, `text`; `account` is NULL.
 pub const MIMI_EV_LOG: mimi_event_kind = 11;
 
@@ -467,6 +473,7 @@ fn c_event(event: &Event, account: *mut mimi_account) -> mimi_event {
             out.temporary = *temporary;
             out.text = c_string(text);
         }
+        EventKind::Resync => out.kind = MIMI_EV_RESYNC,
         EventKind::Log { level, text } => {
             out.kind = MIMI_EV_LOG;
             out.level = *level as i32;

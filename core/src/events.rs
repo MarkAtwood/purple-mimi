@@ -9,10 +9,21 @@
 //! The design note names a `pipe(2)`; a socket pair from std does the same
 //! without `unsafe`, and is what Windows (§13 step 9) needs anyway.
 //!
+//! The queue is bounded ([`MAX_QUEUED`]). A glue that stops draining —
+//! a modal dialog on the UI thread, another plugin wedged in it — must
+//! not be able to grow it without limit, in a process that holds MLS
+//! keys. Past the bound the queue is emptied of everything but the
+//! events the glue cannot reconstruct, and one
+//! [`EventKind::Resync`] is left in their place: the glue then redraws
+//! from the records, which hold the truth anyway (§5.5). That is the
+//! same answer the store's own change feed gives a consumer that falls
+//! behind (`TooOld`).
+//!
 //! # Limitations
 //!
-//! - Unbounded: a glue that never drains the queue grows it without
-//!   limit. The glue drains it on every wake-up.
+//! - A resync asks the glue to redraw every open conversation, which is
+//!   visible work. It happens only when the glue has let
+//!   [`MAX_QUEUED`] events pile up.
 
 use std::collections::{HashSet, VecDeque};
 use std::io::{ErrorKind, Read, Write};
@@ -24,6 +35,12 @@ use crate::status::Status;
 
 /// An account of the process, as the core names it.
 pub type AccountId = u64;
+
+/// How many events may wait before the queue collapses them into one
+/// [`EventKind::Resync`]. Enough for a busy sync of a large room to pass
+/// through untouched; small enough that a glue which has stopped draining
+/// cannot grow the process. INVENTED VALUE, NOT FROM SPEC.
+pub const MAX_QUEUED: usize = 4096;
 
 /// Log levels, as the C ABI numbers them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -104,6 +121,10 @@ pub enum EventKind {
         /// The reaction itself, typically an emoji; empty for a removal.
         reaction: String,
     },
+    /// The queue overflowed: the glue is to redraw every conversation
+    /// from the records, which hold the truth (§5.5). Events it could
+    /// not reconstruct are kept ahead of this one.
+    Resync,
     /// A person was first seen or changed (§5.5).
     Person {
         /// Whether this is the first time.
@@ -169,6 +190,36 @@ struct Inner {
     silenced: HashSet<AccountId>,
 }
 
+impl Inner {
+    /// Replaces the waiting events with the ones the glue cannot work
+    /// out for itself, plus one [`EventKind::Resync`].
+    ///
+    /// Kept: everything that is not recoverable from the records — an
+    /// account's connect and disconnect, a request's result, and the log.
+    /// Dropped: the room, message, reaction and person changes, which the
+    /// records state in full once the glue redraws.
+    fn collapse(&mut self) {
+        let kept: VecDeque<Event> = std::mem::take(&mut self.queue)
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event.kind,
+                    EventKind::Progress { .. }
+                        | EventKind::Connected
+                        | EventKind::Disconnected { .. }
+                        | EventKind::Log { .. }
+                )
+            })
+            .collect();
+        self.queue = kept;
+        // One resync for the process: the glue redraws what it shows.
+        self.queue.push_back(Event {
+            account: None,
+            kind: EventKind::Resync,
+        });
+    }
+}
+
 /// The queue and its wake-up descriptor.
 pub struct EventQueue {
     inner: Mutex<Inner>,
@@ -220,6 +271,9 @@ impl EventQueue {
             .is_some_and(|account| inner.silenced.contains(&account))
         {
             return;
+        }
+        if inner.queue.len() >= MAX_QUEUED {
+            inner.collapse();
         }
         let was_empty = inner.queue.is_empty();
         inner.queue.push_back(event);
@@ -320,6 +374,78 @@ mod tests {
         assert_eq!(queue.pop(), None);
         queue.push(log(None, "c"));
         assert!(readable(&queue), "woken again");
+    }
+
+    /// §5.5: a glue that stops draining must not grow the process. Past
+    /// MAX_QUEUED the recoverable events collapse into one resync, and
+    /// the ones the glue cannot reconstruct survive.
+    #[test]
+    fn an_undrained_queue_collapses_into_a_resync() {
+        let queue = EventQueue::new().unwrap();
+
+        // One event the glue could never work out for itself...
+        queue.push(Event {
+            account: Some(1),
+            kind: EventKind::Disconnected {
+                status: Status::Network,
+                temporary: true,
+                text: "lost".to_owned(),
+            },
+        });
+        // ...and far more than the bound of ones it can.
+        for n in 0..MAX_QUEUED + 100 {
+            queue.push(Event {
+                account: Some(1),
+                kind: EventKind::Message {
+                    change: MessageChange::New,
+                    message: format!("m{n}"),
+                    room: "r1".to_owned(),
+                },
+            });
+        }
+
+        let mut drained = Vec::new();
+        while let Some(event) = queue.pop() {
+            drained.push(event);
+        }
+
+        assert!(
+            drained.len() < MAX_QUEUED + 100,
+            "the queue is bounded, got {}",
+            drained.len()
+        );
+        assert!(
+            drained
+                .iter()
+                .any(|e| matches!(e.kind, EventKind::Disconnected { .. })),
+            "a disconnect cannot be reconstructed from the records, so it is kept"
+        );
+        assert!(
+            drained.iter().any(|e| e.kind == EventKind::Resync),
+            "the glue is told to redraw"
+        );
+        // Nothing is readable once it is all taken.
+        assert!(!readable(&queue));
+    }
+
+    #[test]
+    fn a_queue_under_the_bound_keeps_every_event() {
+        let queue = EventQueue::new().unwrap();
+        for n in 0..100 {
+            queue.push(Event {
+                account: Some(1),
+                kind: EventKind::Message {
+                    change: MessageChange::New,
+                    message: format!("m{n}"),
+                    room: "r1".to_owned(),
+                },
+            });
+        }
+        let mut count = 0;
+        while queue.pop().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 100, "no resync and nothing dropped");
     }
 
     #[test]

@@ -359,6 +359,15 @@ typedef struct mimi_account_info {
 #define MIMI_EV_DISCONNECTED 3
 
 /**
+ * The glue fell behind and is to redraw every conversation from the
+ * records, which hold the truth (§5.5). No fields; `account` is NULL.
+ * It arrives when the glue let the queue reach
+ * `purple_mimi_core::events::MAX_QUEUED`, typically because its main
+ * thread stopped draining.
+ */
+#define MIMI_EV_RESYNC 10
+
+/**
  * A log line: `level`, `text`; `account` is NULL.
  */
 #define MIMI_EV_LOG 11
