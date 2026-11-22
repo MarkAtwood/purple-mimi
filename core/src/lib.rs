@@ -17,7 +17,9 @@
 //! - [`handle`]: handles, user URIs, provider URLs, state directories;
 //! - [`token`]: the provider token kept in the state directory (§12.3);
 //! - [`status`]: the C ABI's status codes and the mapping of mimid's
-//!   errors to them.
+//!   errors to them;
+//! - [`purple`]: the front end over the store (§5.6), which turns the
+//!   store's changes into events and renders what libpurple 2 shows.
 //!
 //! # Limitations
 //!
@@ -34,12 +36,15 @@ pub mod events;
 pub mod handle;
 pub mod logging;
 pub mod process;
+pub mod purple;
 pub mod status;
 pub mod takeover;
 pub mod token;
 
 pub use account::AccountConfig;
-pub use events::{AccountId, Event, EventKind, LogLevel};
+pub use events::{
+    AccountId, Event, EventKind, LogLevel, MessageChange, ReactionChange, RoomChange,
+};
 pub use mimid_agent_store::InvitePolicy;
 pub use process::{AccountInfo, Process, ProcessOptions};
 pub use status::{Failure, Status};

@@ -73,6 +73,83 @@ pub enum EventKind {
         /// The line.
         text: String,
     },
+    /// A room was added, changed, left or forgotten (§5.5, §5.6).
+    Room {
+        /// What happened to it.
+        change: RoomChange,
+        /// Its store key.
+        room: String,
+    },
+    /// A message arrived or moved (§5.6). One store change can mean
+    /// several of these.
+    Message {
+        /// What happened to it.
+        change: MessageChange,
+        /// Its store key.
+        message: String,
+        /// Its room's store key; empty once the record is gone, when the
+        /// glue finds the line by the message key alone.
+        room: String,
+    },
+    /// A reaction was added or taken back (§5.6, §8.8).
+    Reaction {
+        /// Which way.
+        change: ReactionChange,
+        /// The message reacted to, by store key.
+        message: String,
+        /// The reaction's key among that message's reactions.
+        reaction_key: String,
+        /// Who reacted, as a user URI; empty for a removal.
+        sender: String,
+        /// The reaction itself, typically an emoji; empty for a removal.
+        reaction: String,
+    },
+    /// A person was first seen or changed (§5.5).
+    Person {
+        /// Whether this is the first time.
+        added: bool,
+        /// The user URI.
+        user: String,
+    },
+}
+
+/// What happened to a room ([`EventKind::Room`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomChange {
+    /// Joined, hosted or found.
+    Added,
+    /// Its participants, roles, name or subject changed, or may have.
+    Changed,
+    /// This user is out of it.
+    Left,
+    /// It and everything the store kept of it are gone.
+    Forgotten,
+}
+
+/// What happened to a message ([`EventKind::Message`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageChange {
+    /// Stored for the first time.
+    New,
+    /// A new revision: the body changed.
+    Edited,
+    /// Retracted by its sender; the record stays, saying so.
+    Retracted,
+    /// Deleted here, in every front end; the record is gone.
+    Deleted,
+    /// Deleted at its expiry; the record is gone.
+    Expired,
+    /// An attachment's content arrived and is now in the record.
+    AttachmentReady,
+}
+
+/// Which way a reaction went ([`EventKind::Reaction`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReactionChange {
+    /// Someone reacted.
+    Added,
+    /// Someone took their reaction back.
+    Removed,
 }
 
 /// One event: what happened, and to which account (`None` for the

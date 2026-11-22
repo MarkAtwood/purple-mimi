@@ -2299,6 +2299,7 @@ dependencies = [
  "getrandom 0.3.4",
  "mimid-agent-core",
  "mimid-agent-store",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",
