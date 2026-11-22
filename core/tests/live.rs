@@ -85,7 +85,10 @@ fn an_account_connects_keeps_its_token_and_reconnects_with_it() {
         std::fs::read_to_string(&token_file).unwrap().trim(),
         fixture.alice_tokens[0]
     );
-    assert_eq!(std::fs::metadata(&token_file).unwrap().mode() & 0o777, 0o600);
+    assert_eq!(
+        std::fs::metadata(&token_file).unwrap().mode() & 0o777,
+        0o600
+    );
     assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
     assert_eq!(
         std::fs::metadata(dir.parent().unwrap()).unwrap().mode() & 0o777,
@@ -215,7 +218,11 @@ fn a_bad_configuration_is_refused_before_anything_starts() {
         let failure = process
             .open_account(config(Path::new(base), user, url, Some("t")))
             .expect_err(user);
-        assert_eq!(failure.status, Status::InvalidArgument, "{base} {user} {url}");
+        assert_eq!(
+            failure.status,
+            Status::InvalidArgument,
+            "{base} {user} {url}"
+        );
     }
     process.shutdown();
 }
@@ -229,7 +236,12 @@ fn a_second_instance_takes_over_and_the_first_does_not_take_it_back() {
     let second = process();
     let token = &fixture.alice_tokens[0];
     let a = first
-        .open_account(config(base.path(), &fixture.alice, &fixture.url, Some(token)))
+        .open_account(config(
+            base.path(),
+            &fixture.alice,
+            &fixture.url,
+            Some(token),
+        ))
         .unwrap();
     connected(&first, a);
     let b = second
@@ -261,9 +273,7 @@ fn a_second_instance_takes_over_and_the_first_does_not_take_it_back() {
     assert!(second.account_info(b).unwrap().connected, "untouched");
     // ...only when asked to.
     let back = first
-        .open_account(
-            config(base.path(), &fixture.alice, &fixture.url, None).with_take_over(true),
-        )
+        .open_account(config(base.path(), &fixture.alice, &fixture.url, None).with_take_over(true))
         .unwrap();
     connected(&first, back);
     let (status, _) = disconnected(&second, b, Duration::from_secs(5));

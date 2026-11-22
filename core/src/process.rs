@@ -328,7 +328,13 @@ impl Process {
                     let _ = task.await;
                 }
             };
-            if runtime.block_on(tokio::time::timeout(wait, all)).is_err() {
+            // The timeout must be built inside `block_on`: a `Timeout`
+            // needs the runtime's timer, and as an argument it would be
+            // constructed before the runtime is entered, which panics.
+            if runtime
+                .block_on(async { tokio::time::timeout(wait, all).await })
+                .is_err()
+            {
                 tracing::warn!(
                     name: "purple_shutdown_timed_out",
                     "accounts were still releasing at shutdown"

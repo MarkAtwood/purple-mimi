@@ -15,33 +15,35 @@
 //!    [`EventKind::Connected`], and start mimid's runner (sync, expiry,
 //!    KeyPackage top-up, stream wake-ups).
 //! 6. Watch: every [`Timings::watch`], whether another instance asks for
-//!    the account, and whether the lock file is still ours (§6.5).
-//! 7. Release (§6.3 items 7 to 13): stop the runner and wait up to
-//!    [`Timings::grace`], save and close the store and the agent, make
-//!    sure nothing else holds them, sync the directories, drop the lock.
+//!    the account, whether the lock file is still ours (§6.5), and
+//!    whether the provider has stopped answering ([`WatchConnection`]).
+//! 7. Release (§6.3 items 7 to 13): stop the runner, wait up to
+//!    [`Timings::grace`] and abort what is still running, save and close
+//!    the store and the agent, make sure nothing else holds them, sync
+//!    the directories, drop the lock.
 //!
 //! # Limitations
 //!
-//! - mimid's runner logs a failed sync and tries again; it does not tell
-//!   its embedder. So a connection lost while connected is not reported
-//!   as `MIMI_ERR_NETWORK` (§7.4): the account stays connected, and
-//!   agent-core reconnects at the next sync. Needs a mimid change.
-//! - The runner's tasks cannot be aborted from outside. If they do not
-//!   end within the grace period, the store is kept, with the lock, until
-//!   the process ends, and the release reports [`Status::Internal`].
+//! - A lost connection is noticed a sync at a time, not at once: the
+//!   account disconnects after [`NETWORK_FAILURES_BEFORE_DISCONNECT`]
+//!   syncs in a row could not reach the provider, which with the default
+//!   interval is tens of seconds. The stream's own loss wakes the sync
+//!   loop, so the first of those failures comes quickly.
 //! - No user action exists yet (step 5), so item 7's "stop taking new
 //!   work" has nothing to stop.
 
 use std::collections::HashSet;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use mimid_agent_core::{Agent, AgentConfig, AgentError, Binding};
 use mimid_agent_store::blobs::BlobStore;
-use mimid_agent_store::runner::{Runner, RunnerOptions, top_up_key_packages};
-use mimid_agent_store::{InvitePolicy, Store};
+use mimid_agent_store::runner::{Runner, RunnerHooks, RunnerOptions, top_up_key_packages};
+use mimid_agent_store::{InvitePolicy, Store, SyncError, SyncReport};
 use tokio::sync::watch;
 
 use crate::events::{AccountId, Event, EventKind, EventQueue};
@@ -232,6 +234,48 @@ enum Reason {
     TakenOver,
     /// The lock file is not ours any more.
     LockLost,
+    /// The agent could not reach its provider for
+    /// [`NETWORK_FAILURES_BEFORE_DISCONNECT`] syncs in a row (§7.4).
+    NetworkLost,
+}
+
+/// How many syncs in a row must fail to reach the provider before the
+/// account is reported disconnected with [`Status::Network`] (§7.4).
+/// One failure is not a lost connection: agent-core reopens the stream on
+/// the next call and the sync loop makes that call at once, so a blip
+/// costs one pass. INVENTED VALUE, NOT FROM SPEC.
+pub const NETWORK_FAILURES_BEFORE_DISCONNECT: u32 = 3;
+
+/// The [`mimid_agent_store::runner::AfterSync`] hook of §7.4: it counts
+/// syncs that could not reach the provider and, at
+/// [`NETWORK_FAILURES_BEFORE_DISCONNECT`] in a row, tells the account to
+/// disconnect. A sync that failed to save is a local problem and is not
+/// counted; any success resets the count.
+struct WatchConnection {
+    lost: Arc<AtomicBool>,
+    failures: u32,
+}
+
+impl mimid_agent_store::runner::AfterSync for WatchConnection {
+    fn after_sync<'a>(
+        &'a mut self,
+        _store: &'a Store,
+        outcome: Result<&'a SyncReport, &'a SyncError>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        match outcome {
+            Ok(_) => self.failures = 0,
+            Err(SyncError::Agent(_)) => {
+                self.failures = self.failures.saturating_add(1);
+                if self.failures >= NETWORK_FAILURES_BEFORE_DISCONNECT {
+                    self.lost.store(true, Ordering::SeqCst);
+                }
+            }
+            // A save that failed is this device's problem, not the
+            // provider's, and says nothing about the connection.
+            Err(_) => {}
+        }
+        Box::pin(std::future::ready(()))
+    }
 }
 
 impl Context {
@@ -419,6 +463,7 @@ async fn serve(ctx: &Context, mut close: watch::Receiver<bool>) -> Result<(), Fa
     }
 
     let (stop, stop_receiver) = watch::channel(false);
+    let network_lost = Arc::new(AtomicBool::new(false));
     let runner = Runner::start(
         &store,
         RunnerOptions::new(
@@ -427,13 +472,16 @@ async fn serve(ctx: &Context, mut close: watch::Receiver<bool>) -> Result<(), Fa
         )
         .with_stream_wake(stream_wake),
         &stop_receiver,
-        None,
+        RunnerHooks::new().after(Box::new(WatchConnection {
+            lost: Arc::clone(&network_lost),
+            failures: 0,
+        })),
     );
     ctx.shared.connected.store(true, Ordering::SeqCst);
     tracing::info!(name: "purple_account_connected", "the account is connected");
     ctx.push(EventKind::Connected);
 
-    let reason = watch_lock(ctx, &store, &nonce, &mut close).await;
+    let reason = watch_lock(ctx, &store, &nonce, &mut close, &network_lost).await;
     ctx.shared.connected.store(false, Ordering::SeqCst);
     let _ = stop.send(true);
     let released = release(ctx, store, Some(runner), reason).await;
@@ -447,6 +495,12 @@ async fn serve(ctx: &Context, mut close: watch::Receiver<bool>) -> Result<(), Fa
                 "This account was opened by another program using the same profile.",
             ))
         }
+        // Temporary, and the account is not remembered as taken over:
+        // libpurple reconnects by its own rules (§7.4).
+        (Reason::NetworkLost, Ok(())) => Err(Failure::temporary(
+            Status::Network,
+            "The connection to the provider was lost and could not be reopened.",
+        )),
         (Reason::LockLost, Ok(())) => Err(Failure::fatal(
             Status::LockLost,
             format!(
@@ -492,10 +546,19 @@ async fn watch_lock(
     store: &Store,
     nonce: &str,
     close: &mut watch::Receiver<bool>,
+    network_lost: &AtomicBool,
 ) -> Reason {
     loop {
         if *close.borrow() {
             return Reason::Closed;
+        }
+        if network_lost.load(Ordering::SeqCst) {
+            tracing::warn!(
+                name: "purple_network_lost",
+                failures = NETWORK_FAILURES_BEFORE_DISCONNECT,
+                "the provider could not be reached by that many syncs in a row"
+            );
+            return Reason::NetworkLost;
         }
         if !store.state_lock().intact() {
             tracing::error!(
@@ -525,17 +588,26 @@ async fn release(
     runner: Option<Runner>,
     reason: Reason,
 ) -> Result<(), Failure> {
-    // Item 8; §6.5 gives a lost lock no grace, but the runner's tasks
-    // cannot be cut, so they get one watch period.
+    // Items 8 and 9: wait the grace period out, then abort what is still
+    // running. §6.5 gives a lost lock no grace of its own, but a loop in
+    // the middle of a pass still gets one watch period to end cleanly.
     let grace = if reason == Reason::LockLost {
         ctx.timings.watch
     } else {
         ctx.timings.grace
     };
-    if let Some(runner) = runner
-        && tokio::time::timeout(grace, runner.join()).await.is_err()
-    {
-        return Err(keep(ctx, store, "the account's work did not stop in time"));
+    if let Some(runner) = runner {
+        let stopped = runner.join_within(grace).await;
+        if !stopped.clean() {
+            // Not a failure of the release: an aborted loop is cut at a
+            // transaction boundary (§6.4) and has dropped its reference
+            // to the store, which is what item 10 needs.
+            tracing::warn!(
+                name: "purple_loops_aborted",
+                loops = ?stopped.aborted,
+                "loops of the account did not end within the grace period and were aborted"
+            );
+        }
     }
     // Item 10: one last save, and the stream closed.
     if let Err(e) = tokio::time::timeout(grace, store.close())

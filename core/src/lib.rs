@@ -24,7 +24,6 @@
 //! - Step 4 of the design's plan: accounts connect, disconnect, report
 //!   their state and hand over. Rooms, messages and every user action are
 //!   steps 5 and 6.
-//! - A connection lost while connected is not reported (see [`account`]).
 //! - Unix only: the event descriptor is a Unix socket pair and the state
 //!   lock is mimid-agent-core's `flock`.
 
@@ -52,4 +51,4 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The mimid revision this library is built against (decision PQ12): tag
 /// purple-groundwork-1.
-pub const MIMID_REVISION: &str = "279826c9581e2f7bc8aaa1bb92cb3a980fdffe14";
+pub const MIMID_REVISION: &str = "41babcc9";

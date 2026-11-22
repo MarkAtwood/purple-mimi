@@ -14,8 +14,8 @@ repository = "https://github.com/MarkAtwood/purple-mimi"
 # The mimid crates are publish = false. When this revision changes, the
 # [patch.crates-io] below must be copied again from mimid's Cargo.toml at
 # the same revision; ci/check-mimid-patch.sh compares them.
-mimid-agent-core = { git = "https://github.com/MarkAtwood/mimid", rev = "279826c9581e2f7bc8aaa1bb92cb3a980fdffe14" }
-mimid-agent-store = { git = "https://github.com/MarkAtwood/mimid", rev = "279826c9581e2f7bc8aaa1bb92cb3a980fdffe14" }
+mimid-agent-core = { git = "https://github.com/MarkAtwood/mimid", rev = "41babcc9" }
+mimid-agent-store = { git = "https://github.com/MarkAtwood/mimid", rev = "41babcc9" }
 # The versions mimid uses.
 tokio = { version = "1.53.3", default-features = false, features = ["rt-multi-thread", "sync", "time", "macros"] }
 tracing = "0.1.44"
