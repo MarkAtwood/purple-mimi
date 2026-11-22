@@ -47,6 +47,7 @@ use mimid_agent_store::{InvitePolicy, Store, SyncError, SyncReport};
 use tokio::sync::watch;
 
 use crate::events::{AccountId, Event, EventKind, EventQueue};
+use crate::process::locked;
 use crate::status::{self, Failure, Status};
 use crate::takeover::{self, Attempt, Refusal, Timings};
 use crate::token::{self, Token};
@@ -207,6 +208,13 @@ pub struct Shared {
     /// This device's key fingerprint once open: the first 8 octets of its
     /// signature key in hex (§8.12, INVENTED form).
     pub fingerprint: Mutex<Option<String>>,
+    /// The account's store while it is open, so the reads of §5.5 can be
+    /// synchronous.
+    ///
+    /// The release path clears this BEFORE it checks that nothing else
+    /// holds the store (§6.3 item 10): an Arc left here would fail that
+    /// check and keep the state lock for the life of the process.
+    pub store: Mutex<Option<Arc<Store>>>,
 }
 
 /// What the account task has from the process.
@@ -477,6 +485,7 @@ async fn serve(ctx: &Context, mut close: watch::Receiver<bool>) -> Result<(), Fa
             failures: 0,
         })),
     );
+    *locked(&ctx.shared.store) = Some(Arc::clone(&store));
     ctx.shared.connected.store(true, Ordering::SeqCst);
     tracing::info!(name: "purple_account_connected", "the account is connected");
     ctx.push(EventKind::Connected);
@@ -588,6 +597,11 @@ async fn release(
     runner: Option<Runner>,
     reason: Reason,
 ) -> Result<(), Failure> {
+    // Before anything else: the reads of §5.5 hold a clone of the store
+    // here, and item 10 below needs the last reference. Clearing it
+    // first means a read that arrives during the release fails with
+    // "not connected" rather than keeping the lock for ever.
+    *locked(&ctx.shared.store) = None;
     // Items 8 and 9: wait the grace period out, then abort what is still
     // running. §6.5 gives a lost lock no grace of its own, but a loop in
     // the middle of a pass still gets one watch period to end cleanly.

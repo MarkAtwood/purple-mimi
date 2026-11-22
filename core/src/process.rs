@@ -82,6 +82,88 @@ pub struct AccountInfo {
     pub connected: bool,
 }
 
+/// One room, as a list needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RoomSummary {
+    /// Its store key.
+    pub key: String,
+    /// Its name, empty for an unnamed room.
+    pub name: String,
+    /// Its status, as the store names it.
+    pub status: String,
+    /// Whether it is a one-to-one room flagged `direct` locally.
+    pub direct: bool,
+}
+
+/// One message as the glue shows it: the record's fields the glue needs,
+/// plus the lines rendered in Rust (§5.6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct MessageView {
+    /// Its store key.
+    pub key: String,
+    /// Its room's store key.
+    pub room: String,
+    /// Who sent it, as a user URI; empty for a notice from the agent.
+    pub sender: String,
+    /// The hub's acceptance time, in milliseconds.
+    pub accepted_at: u64,
+    /// The body as plain text, as stored.
+    pub body: String,
+    /// Its number in its room (§8.7), 0 when this front end has not
+    /// numbered it yet.
+    pub number: u64,
+    /// The whole line libpurple 2 shows, as HTML (§5.6).
+    pub line_html: String,
+    /// Whether it was retracted or deleted by its sender.
+    pub deleted: bool,
+    /// Whether it has been edited.
+    pub edited: bool,
+    /// Whether it is one of the agent's own notices.
+    pub notice: bool,
+}
+
+impl MessageView {
+    /// `message` as the glue shows it, with its line rendered.
+    fn of(message: &mimid_agent_store::record::Message, state: &mimid_agent_store::State) -> Self {
+        let reported: crate::purple::Reported = message
+            .ext
+            .get(crate::purple::EXT_KEY)
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .unwrap_or_default();
+        // §8.7: a reply names its target's number, which only the target's
+        // own record knows.
+        let reply_to = match &message.in_reply_to {
+            Some(mimid_agent_store::record::Reply::Message(target)) => state
+                .messages
+                .get(target)
+                .and_then(|m| m.ext.get(crate::purple::EXT_KEY))
+                .and_then(|value| {
+                    serde_json::from_value::<crate::purple::Reported>(value.clone()).ok()
+                })
+                .map(|r| r.number)
+                .filter(|number| *number != 0),
+            _ => None,
+        };
+        Self {
+            key: message.key.clone(),
+            room: message.room.clone(),
+            sender: match &message.sender {
+                mimid_agent_store::record::Sender::User(uri) => uri.clone(),
+                _ => String::new(),
+            },
+            accepted_at: message.accepted_at,
+            body: message.body.clone(),
+            number: reported.number,
+            line_html: crate::purple::render_line(message, true, reported.number, reply_to),
+            deleted: message.deleted.is_some(),
+            edited: message.edited_at.is_some(),
+            notice: message.notice.is_some(),
+        }
+    }
+}
+
 struct Entry {
     shared: Arc<Shared>,
     close: watch::Sender<bool>,
@@ -114,7 +196,7 @@ impl std::fmt::Debug for Process {
     }
 }
 
-fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -310,6 +392,104 @@ impl Process {
             state_dir: entry.state_dir.clone(),
             fingerprint: locked(&entry.shared.fingerprint).clone(),
             connected: entry.shared.connected.load(Ordering::SeqCst),
+        })
+    }
+
+    /// Runs `read` against `id`'s store, which is open only while the
+    /// account is (§5.5: the reads are synchronous, straight from the
+    /// store's records).
+    ///
+    /// # Errors
+    ///
+    /// [`Status::NotConnected`] when the account is not open, including
+    /// while it is releasing, and [`Status::Poisoned`] after a panic.
+    pub fn with_store<T>(
+        &self,
+        id: AccountId,
+        read: impl FnOnce(&Store) -> Result<T, Failure>,
+    ) -> Result<T, Failure> {
+        self.check_account(id)?;
+        // The clone is held only for this call, so it cannot delay the
+        // release's ownership check (§6.3 item 10) beyond one read.
+        let store = {
+            let accounts = locked(&self.accounts);
+            let entry = accounts
+                .get(&id)
+                .ok_or_else(|| Failure::fatal(Status::InvalidArgument, "no such account"))?;
+            locked(&entry.shared.store).clone()
+        };
+        let store = store
+            .ok_or_else(|| Failure::temporary(Status::NotConnected, "The account is not open."))?;
+        read(&store)
+    }
+
+    /// Every room this account has not forgotten, oldest first by key.
+    ///
+    /// # Errors
+    ///
+    /// As [`Process::with_store`].
+    pub fn rooms(&self, id: AccountId) -> Result<Vec<RoomSummary>, Failure> {
+        self.with_store(id, |store| {
+            let state = store.state();
+            Ok(state
+                .rooms
+                .iter()
+                .map(|(key, room)| RoomSummary {
+                    key: key.clone(),
+                    name: room.name.clone().unwrap_or_default(),
+                    status: format!("{:?}", room.status),
+                    direct: room.direct,
+                })
+                .collect())
+        })
+    }
+
+    /// One message as the store has it, with the lines libpurple 2 shows
+    /// (§5.6).
+    ///
+    /// # Errors
+    ///
+    /// As [`Process::with_store`], and [`Status::NoSuchMessage`].
+    pub fn message(&self, id: AccountId, key: &str) -> Result<MessageView, Failure> {
+        self.with_store(id, |store| {
+            let state = store.state();
+            let message = state
+                .messages
+                .get(key)
+                .ok_or_else(|| Failure::fatal(Status::NoSuchMessage, "no such message"))?;
+            Ok(MessageView::of(message, &state))
+        })
+    }
+
+    /// A page of `room`'s history, oldest first, ending before
+    /// `before_key` when it is given.
+    ///
+    /// # Errors
+    ///
+    /// As [`Process::with_store`].
+    pub fn history(
+        &self,
+        id: AccountId,
+        room: &str,
+        before_key: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<MessageView>, Failure> {
+        self.with_store(id, |store| {
+            let state = store.state();
+            // Ordered as the store orders history: (accepted_at, seq).
+            let mut all: Vec<&mimid_agent_store::record::Message> =
+                state.messages.values().filter(|m| m.room == room).collect();
+            all.sort_by_key(|m| (m.accepted_at, m.seq));
+            if let Some(before) = before_key
+                && let Some(at) = all.iter().position(|m| m.key == before)
+            {
+                all.truncate(at);
+            }
+            let start = all.len().saturating_sub(limit);
+            Ok(all[start..]
+                .iter()
+                .map(|m| MessageView::of(m, &state))
+                .collect())
         })
     }
 

@@ -483,6 +483,111 @@ mod tests {
         assert!(ext.contains_key("irc"), "another front end's entry is kept");
     }
 
+    /// A message record built from JSON, so these tests need no live
+    /// account: the store's records are `Deserialize`.
+    fn message(extra: serde_json::Value) -> Message {
+        let mut base = serde_json::json!({
+            "key": "m1",
+            "room": "r1",
+            "seq": 1,
+            "sender": {"user": "mimi://a.example/u/alice"},
+            "acceptedAt": 1_700_000_000_000u64,
+            "receivedAt": 1_700_000_000_000u64,
+            "senderMsgId": "s1",
+            "body": "hello",
+            "bodyType": "text/plain",
+        });
+        let (serde_json::Value::Object(base_map), serde_json::Value::Object(extra_map)) =
+            (&mut base, &extra)
+        else {
+            panic!("both must be objects");
+        };
+        for (key, value) in extra_map {
+            base_map.insert(key.clone(), value.clone());
+        }
+        serde_json::from_value(base).expect("a valid message record")
+    }
+
+    #[test]
+    fn a_line_carries_the_number_and_the_body() {
+        let line = render_line(&message(serde_json::json!({})), true, 4, None);
+        assert!(line.contains("[4]"), "{line}");
+        assert!(line.contains("hello"), "{line}");
+        assert!(!line.contains("(edited)"), "{line}");
+
+        // Without numbers the label is gone but the body stays.
+        let plain = render_line(&message(serde_json::json!({})), false, 4, None);
+        assert!(!plain.contains("[4]"), "{plain}");
+        assert!(plain.contains("hello"), "{plain}");
+    }
+
+    /// §8.6: an edit says so, and a retraction replaces the line rather
+    /// than leaving the old text visible.
+    #[test]
+    fn an_edit_and_a_retraction_say_so() {
+        let edited = render_line(
+            &message(serde_json::json!({"editedAt": 1_700_000_001_000u64})),
+            false,
+            1,
+            None,
+        );
+        assert!(edited.contains("(edited)"), "{edited}");
+        assert!(edited.contains("hello"), "{edited}");
+
+        let retracted = render_line(
+            &message(serde_json::json!({
+                "body": "",
+                "deleted": {"at": 1_700_000_002_000u64, "forAll": true},
+            })),
+            false,
+            1,
+            None,
+        );
+        assert!(retracted.contains("(deleted)"), "{retracted}");
+    }
+
+    /// §8.7: a reply names the number of what it answers, and says so
+    /// even when that message is not stored here.
+    #[test]
+    fn a_reply_names_its_target() {
+        let with_number = render_line(
+            &message(serde_json::json!({"inReplyTo": {"message": "m0"}})),
+            false,
+            2,
+            Some(1),
+        );
+        assert!(with_number.contains("[1]"), "{with_number}");
+
+        let unknown = render_line(
+            &message(serde_json::json!({"inReplyTo": {"message": "m0"}})),
+            false,
+            2,
+            None,
+        );
+        assert!(unknown.contains("an earlier message"), "{unknown}");
+    }
+
+    /// A body is never markup, even inside a whole line (§12.4).
+    #[test]
+    fn a_hostile_body_cannot_escape_its_line() {
+        let line = render_line(
+            &message(serde_json::json!({
+                "body": "</font><script>alert(1)</script>\u{202e}evil",
+            })),
+            true,
+            1,
+            None,
+        );
+        assert!(!line.contains("<script"), "{line}");
+        assert!(line.contains("&lt;script&gt;"), "{line}");
+        assert!(!line.contains('\u{202e}'), "{line}");
+        // Our own markup is still there, so the line is well formed.
+        assert!(
+            line.contains("<font color=\"#808080\">[1]</font>"),
+            "{line}"
+        );
+    }
+
     /// A front end must never fail on what it did not write.
     #[test]
     fn a_junk_ext_entry_reads_as_the_default() {
