@@ -1,0 +1,12 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Only GPlugin's entry points are exported (§10.1).
+ */
+{
+  global:
+    gplugin_query;
+    gplugin_load;
+    gplugin_unload;
+  local:
+    *;
+};

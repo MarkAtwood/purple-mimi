@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# macOS form of exports.map (§10.1). Homebrew has no libpurple 3 today,
+# so this is here for symmetry and for whoever builds Pidgin 3 by hand.
+_gplugin_query
+_gplugin_load
+_gplugin_unload

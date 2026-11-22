@@ -1,0 +1,11 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Only libpurple 2's entry point is exported (§10.1), so that two Rust
+ * plugins in one Pidgin cannot resolve each other's symbols.
+ */
+{
+  global:
+    purple_init_plugin;
+  local:
+    *;
+};

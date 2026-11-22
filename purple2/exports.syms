@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# macOS form of exports.map (§10.1); Mach-O symbols carry a leading _.
+_purple_init_plugin

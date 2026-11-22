@@ -757,7 +757,7 @@ pub unsafe extern "C" fn mimi_account_close(account: *mut mimi_account) {
 /// `account` is NULL or a live handle; `out` is NULL or valid for one
 /// write.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mimi_account_info(
+pub unsafe extern "C" fn mimi_account_get_info(
     account: *mut mimi_account,
     out: *mut *mut mimi_account_info,
 ) -> mimi_status {
@@ -793,18 +793,18 @@ pub unsafe extern "C" fn mimi_account_info(
     })
 }
 
-/// Frees what [`mimi_account_info`] gave. NULL is ignored. Any thread.
+/// Frees what [`mimi_account_get_info`] gave. NULL is ignored. Any thread.
 ///
 /// # Safety
 ///
-/// `info` is NULL or came from [`mimi_account_info`] and was not freed.
+/// `info` is NULL or came from [`mimi_account_get_info`] and was not freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mimi_account_info_free(info: *mut mimi_account_info) {
     guard((), || {
         if info.is_null() {
             return;
         }
-        // SAFETY: the caller's contract: a Box from mimi_account_info,
+        // SAFETY: the caller's contract: a Box from mimi_account_get_info,
         // whose strings are each NULL or from c_string.
         unsafe {
             let info = Box::from_raw(info);

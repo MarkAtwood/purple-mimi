@@ -1,0 +1,21 @@
+purple-mimi
+Copyright 2026 Mark Atwood
+
+Licensed under the GNU General Public License, version 3 or later; see
+COPYING.
+
+This plugin statically links mimid, which is licensed under the Apache
+License, Version 2.0. Apache-2.0 section 4(d) requires that mimid's own
+NOTICE be carried in any distribution that includes it, so it follows,
+unchanged:
+
+----------------------------------------------------------------------
+mimid
+Copyright 2026 Mark Atwood
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+----------------------------------------------------------------------
+
+The licences of every other crate linked in are listed in
+THIRD-PARTY-LICENSES, generated from Cargo.lock at each release
+(docs/design/purple-mimi.md §10.2).
